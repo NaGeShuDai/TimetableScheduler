@@ -37,6 +37,8 @@ class Application(tk.Tk):
         if png.exists():
             self._app_icon = tk.PhotoImage(file=str(png))
             self.iconphoto(True, self._app_icon)
+        if sys.platform == 'win32' and icon.exists():
+            self.bind('<Map>', lambda event: self.after_idle(lambda: self.set_windows_icon(icon)) if event.widget == self else None, add='+')
         self.geometry('1320x860')
         self.minsize(1000, 700)
         self.configure(bg=BG)
@@ -89,6 +91,23 @@ class Application(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.after(100, self.poll)
         self.refresh_all()
+
+    def set_windows_icon(self, icon):
+        from ctypes import wintypes
+        user = ctypes.windll.user32
+        user.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user.LoadImageW.restype = wintypes.HANDLE
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user.SendMessageW.restype = wintypes.LPARAM
+        hwnd = user.GetAncestor(self.winfo_id(), 2)
+        self._native_icons = []
+        for kind, size in [(0, 32), (1, 64)]:
+            handle = user.LoadImageW(None, str(icon), 1, size, size, 0x8010)
+            if handle:
+                self._native_icons.append(handle)
+                user.SendMessageW(hwnd, 0x80, kind, handle)
 
     def term(self):
         return next((p.term for p in self.people if p.term), '未导入学期')
