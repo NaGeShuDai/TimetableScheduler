@@ -3,6 +3,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import traceback
 import ctypes
 import tkinter as tk
@@ -239,7 +240,7 @@ class Application(tk.Tk):
         if self.guarded():
             return
         paths = filedialog.askopenfilenames(title='批量导入个人课表', filetypes=[('Excel 课表', '*.xls *.xlsx')])
-        success, failures = 0, []
+        success, failures, reminders = 0, [], []
         for path in paths:
             try:
                 p = parse_timetable(path)
@@ -253,6 +254,8 @@ class Application(tk.Tk):
                     self.people.remove(old)
                 self.people.append(p)
                 success += 1
+                if p.warnings:
+                    reminders.append(f'{p.name}：{len(p.warnings)} 条信息提醒，上课时间已保留，可参与统计与排班。')
             except Exception as exc:
                 failures.append(Path(path).name + '：' + str(exc))
         if paths:
@@ -260,6 +263,8 @@ class Application(tk.Tk):
             self.status.set(f'导入完成：成功 {success} 份，失败 {len(failures)} 份。')
         if failures:
             messagebox.showwarning('部分文件导入失败', '\n\n'.join(failures))
+        if reminders:
+            messagebox.showwarning('课程信息提醒（无需确认）', '\n'.join(reminders) + '\n\n详细提醒可在人员课表详情中查看。')
 
     def person_details(self):
         p = self.selected_person()
@@ -289,7 +294,7 @@ class Application(tk.Tk):
         tree.pack(fill='both', expand=True)
         for index, c in enumerate(p.courses):
             clock = f'{c["start"] // 60:02}:{c["start"] % 60:02}-{c["end"] // 60:02}:{c["end"] % 60:02}'
-            tree.insert('', 'end', iid=str(index), values=(c['name'], DAYS[c['day']], clock, ','.join(map(str, c['weeks'])), c['location']))
+            tree.insert('', 'end', iid=str(index), values=(c['name'].replace('\n', ' / ') or '（课程信息留空）', DAYS[c['day']], clock, ','.join(map(str, c['weeks'])), c['location'].replace('\n', ' / ')))
         def edit_selected():
             if tree.selection():
                 self.add_course(p, int(tree.selection()[0]), lambda: dialog.destroy())
@@ -298,6 +303,11 @@ class Application(tk.Tk):
         ttk.Button(body, text='修改选中课程', command=edit_selected).pack(anchor='w', pady=8)
         tree.bind('<Double-1>', lambda event: edit_selected())
         confirmed = tk.BooleanVar(value=p.errors_confirmed)
+        if p.warnings:
+            reminder = tk.Text(body, height=4, wrap='word', font=('Microsoft YaHei UI', 10), foreground=ORANGE)
+            reminder.pack(fill='x', pady=8)
+            reminder.insert('1.0', '课程信息提醒（不影响空课表与排班，无需确认）：\n' + '\n'.join(p.warnings))
+            reminder.configure(state='disabled')
         if p.errors:
             notes = tk.Text(body, height=5, wrap='word', font=('Microsoft YaHei UI', 10))
             notes.pack(fill='x', pady=12)
@@ -507,8 +517,10 @@ class Application(tk.Tk):
                 state = '解析异常，不能参与'
             elif p.errors:
                 state = '异常已确认' if p.enabled else '已停用'
+            elif p.warnings:
+                state += f' · 信息提醒 {len(p.warnings)} 条'
             self.person_tree.insert('', 'end', iid=p.id, values=(p.name, p.id, p.term, p.group, len(p.courses), state, p.department),
-                                    tags=('warning',) if p.errors and not p.errors_confirmed else ())
+                                    tags=('warning',) if (p.errors and not p.errors_confirmed) or p.warnings else ())
         self.refresh_rules()
         self.refresh_free()
         self.refresh_schedule()
@@ -750,23 +762,59 @@ class Application(tk.Tk):
         self.busy = True
         self.generate_button.configure(state='disabled')
         self.status.set(f'正在计算第 {w} 周建议排班…')
+        self.cancel_calculation = threading.Event()
+        self.calculation_started = time.monotonic()
+        self.loading_window = tk.Toplevel(self)
+        self.loading_window.title('正在生成排班')
+        self.loading_window.geometry('380x230')
+        self.loading_window.transient(self)
+        self.loading_window.grab_set()
+        frame = ttk.Frame(self.loading_window, padding=24)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text='正在生成排班', font=('Microsoft YaHei UI', 14, 'bold')).pack(pady=4)
+        self.calculation_stage = tk.StringVar(value='准备计算')
+        ttk.Label(frame, textvariable=self.calculation_stage).pack(pady=4)
+        self.calculation_time = tk.StringVar(value='已用时 0 秒')
+        ttk.Label(frame, textvariable=self.calculation_time).pack(pady=4)
+        self.loading_bar = ttk.Progressbar(frame, mode='indeterminate')
+        self.loading_bar.pack(fill='x', pady=8)
+        self.loading_bar.start(12)
+        def cancel():
+            self.cancel_calculation.set()
+            self.calculation_stage.set('正在取消…')
+        ttk.Button(frame, text='取消计算', command=cancel).pack(pady=4)
+        self.loading_window.protocol('WM_DELETE_WINDOW', cancel)
         people = [Person(**p.to_dict()) for p in self.people]
         rules = json.loads(json.dumps(self.rules))
         demands, slots = dict(self.demands), [list(s) for s in self.slots]
         def worker():
             try:
-                result, diagnostics = solve_schedule(people, w, demands, rules, slots)
+                result, diagnostics = solve_schedule(people, w, demands, rules, slots,
+                    progress=lambda label: self.events.put(('progress', label)), cancel_event=self.cancel_calculation)
                 self.events.put(('result', w, result, diagnostics))
+            except InterruptedError:
+                self.events.put(('cancelled',))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
         threading.Thread(target=worker, daemon=True).start()
 
     def poll(self):
+        if self.busy and hasattr(self, 'calculation_time'):
+            self.calculation_time.set(f'已用时 {int(time.monotonic() - self.calculation_started)} 秒')
         try:
             event = self.events.get_nowait()
+            if event[0] == 'progress':
+                if not self.cancel_calculation.is_set():
+                    self.calculation_stage.set(event[1])
+                self.after(100, self.poll)
+                return
             self.busy = False
             self.generate_button.configure(state='normal')
-            if event[0] == 'error':
+            self.loading_bar.stop()
+            self.loading_window.destroy()
+            if event[0] == 'cancelled':
+                self.status.set('已取消计算，保留原排班。')
+            elif event[0] == 'error':
                 self.status.set('生成失败，请调整规则。')
                 messagebox.showerror('无法生成排班', event[1])
             else:

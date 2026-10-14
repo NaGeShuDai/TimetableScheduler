@@ -63,6 +63,7 @@ class Person:
     enabled: bool = True
     campus: str = '海甸'
     department: str = '办公室'
+    warnings: list = field(default_factory=list)
 
     def to_dict(self):
         return asdict(self)
@@ -80,6 +81,60 @@ def read_rows(path):
         return [list(row) for row in book.worksheets[0].iter_rows(values_only=True)]
     finally:
         book.close()
+
+
+def parse_course_cell(text, day, start, end, cell):
+    courses, errors, warnings = [], [], []
+    if day not in range(7) or not 0 <= start < end <= 1440:
+        return courses, ['无法确定有效的星期或上课时间'], warnings
+    normalized = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+    # Blank lines separate records; week/period lines anchor the required time data.
+    for block in re.split(r'\n[ \t]*\n+', normalized):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        markers = []
+        for index, line in enumerate(lines):
+            canonical = line.translate(str.maketrans('（）【】', '()[]'))
+            match = re.fullmatch(r'([\d\s,，、\-－—]+)\s*\(([^)]*周[^)]*)\)\s*\[([^\]]*节)\]\s*', canonical)
+            if match:
+                markers.append((index, match))
+        if not markers:
+            if re.search(r'[（(][^\n]*周|[\[【][^\n]*节', block) or not re.search(r'[（(][^\n]*周[^\n]*[\[【]', normalized):
+                errors.append('无法识别周次与节次行')
+            else:
+                warnings.append('课程附加信息缺少完整结构，已忽略；已识别的上课时间仍参与统计')
+            continue
+        marker_indices = {index for index, _ in markers}
+        for index, line in enumerate(lines):
+            if index not in marker_indices and re.search(r'[（(][^\n]*周|[\[【][^\n]*节', line):
+                errors.append('存在无法识别的周次与节次行，需要核实')
+        for index, match in markers:
+            try:
+                if not re.fullmatch(r'\s*\d+(?:[\s,，、\-－—]+\d+)*\s*节', match.group(3)):
+                    raise ValueError('节次格式无效，需要核实')
+                weeks = weeks_from_text(match.group(1))
+                if '单' in match.group(2):
+                    weeks = [w for w in weeks if w % 2]
+                if '双' in match.group(2):
+                    weeks = [w for w in weeks if not w % 2]
+                if not weeks:
+                    raise ValueError('没有有效教学周')
+                info = lines[:index]
+                incomplete = len(markers) > 1 or len(info) < 2 or index == len(lines) - 1
+                if incomplete:
+                    warnings.append('课程信息格式不完整或多门课程边界不清，名称、教师和地点留空；上课时间已保留，无需确认即可参与统计与排班')
+                periods = list(map(int, re.findall(r'\d+', match.group(3))))
+                if len(periods) == 2 and periods[1] > periods[0]:
+                    periods = list(range(periods[0], periods[1] + 1))
+                courses.append(dict(name='' if incomplete else '\n'.join(info[:-1]),
+                    teacher='' if incomplete else info[-1], weeks=weeks, day=day,
+                    periods=periods, start=start, end=end,
+                    location='' if incomplete else '\n'.join(lines[index + 1:]),
+                    raw=block, cell=cell, conservative=True, time_only=incomplete))
+            except ValueError as exc:
+                errors.append(str(exc))
+    return courses, errors, warnings
 
 
 def parse_timetable(path):
@@ -112,36 +167,10 @@ def parse_timetable(path):
             text = row[col] if col < len(row) else ''
             if not text:
                 continue
-            # Week/period lines delimit records even when blank separators are lost.
-            lines = [s.strip() for s in text.splitlines() if s.strip()]
-            markers = [i for i, line in enumerate(lines) if re.search(r'\(.*?周.*?\).*?\[', line)]
-            if not markers:
-                person.errors.append(f'第{r + 1}行/{DAYS[day]}：无法识别课程时间：{text}')
-                continue
-            previous = 0
-            for index, marker in enumerate(markers):
-                try:
-                    line = lines[marker]
-                    m = re.fullmatch(r'([\d\s,，、\-－—]+)\(([^)]*周[^)]*)\)\[([^]]+)\]', line)
-                    if not m or marker - previous != 2:
-                        raise ValueError('课程记录结构不符合名称/教师/周次/地点格式')
-                    weeks = weeks_from_text(m.group(1))
-                    parity = m.group(2)
-                    if '单' in parity:
-                        weeks = [w for w in weeks if w % 2]
-                    elif '双' in parity:
-                        weeks = [w for w in weeks if not w % 2]
-                    periods = list(map(int, re.findall(r'\d+', m.group(3))))
-                    if len(periods) == 2 and periods[1] > periods[0]:
-                        periods = list(range(periods[0], periods[1] + 1))
-                    location_end = markers[index + 1] - 2 if index + 1 < len(markers) else len(lines)
-                    person.courses.append(dict(name=lines[marker - 2], teacher=lines[marker - 1],
-                        weeks=weeks, day=day, periods=periods, start=start, end=end,
-                        location=' '.join(lines[marker + 1:location_end]), raw=text,
-                        cell=f'{chr(65 + col)}{r + 1}', conservative=True))
-                    previous = location_end
-                except ValueError as exc:
-                    person.errors.append(f'第{r + 1}行/{DAYS[day]}：{exc}')
+            courses, errors, warnings = parse_course_cell(text, day, start, end, f'{chr(65 + col)}{r + 1}')
+            person.courses.extend(courses)
+            person.errors.extend(f'第{r + 1}行/{DAYS[day]}：{message}' for message in errors)
+            person.warnings.extend(f'第{r + 1}行/{DAYS[day]}：{message}' for message in warnings)
     if not person.courses:
         raise ValueError('没有成功识别的课程')
     return person
@@ -170,7 +199,7 @@ def candidates(people, week, day, slot, rules, slots=SLOTS):
     return [pid for pid in pool if pid not in exclusions]
 
 
-def solve_schedule(people, week, demands, rules, slots=SLOTS, locked=None):
+def solve_schedule(people, week, demands, rules, slots=SLOTS, locked=None, progress=None, cancel_event=None):
     from ortools.sat.python import cp_model
     model = cp_model.CpModel()
     ids = [p.id for p in people]
@@ -251,13 +280,30 @@ def solve_schedule(people, week, demands, rules, slots=SLOTS, locked=None):
     objectives.append(('减少一天多班', sum(excess), False))
     # Each proven optimum becomes a constraint before optimizing the next priority.
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 5
+    solver.parameters.max_time_in_seconds = 60
     solver.parameters.num_search_workers = 1
     diagnostics = []
     answer = None
     for label, expr, maximize in objectives:
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError('已取消计算')
+        if progress:
+            progress(label)
         model.maximize(expr) if maximize else model.minimize(expr)
-        status = solver.solve(model)
+        import threading
+        stage_done = threading.Event()
+        def watch_cancel(done=stage_done):
+            while not done.wait(0.05):
+                if cancel_event.is_set():
+                    solver.stop_search()
+        if cancel_event is not None:
+            threading.Thread(target=watch_cancel, daemon=True).start()
+        try:
+            status = solver.solve(model)
+        finally:
+            stage_done.set()
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError('已取消计算')
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             if answer is None:
                 raise ValueError('规则存在冲突，无法生成排班；请检查固定安排和重叠时段')

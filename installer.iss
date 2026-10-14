@@ -1,7 +1,11 @@
+#ifndef AppExe
+  #define AppExe "TimetableScheduler.exe"
+#endif
+
 [Setup]
 AppId=TimetableScheduler
 AppName=空课与排班
-AppVersion=1.5.0
+AppVersion=1.6.0
 SetupIconFile=resources\app.ico
 DefaultDirName={localappdata}\Programs\TimetableScheduler
 DisableDirPage=no
@@ -14,7 +18,7 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\TimetableScheduler.exe
 
 [Files]
-Source: "TimetableScheduler.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "resources\*"; DestDir: "{app}\resources"; Flags: ignoreversion recursesubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 

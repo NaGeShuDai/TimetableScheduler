@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from openpyxl import load_workbook
-from core import Person, SLOTS, parse_timetable, weeks_from_text, available, candidates, solve_schedule, export_grid, compact_weeks, total_free_cells
+from core import Person, SLOTS, parse_timetable, parse_course_cell, weeks_from_text, available, candidates, solve_schedule, export_grid, compact_weeks, total_free_cells
 
 
 def people():
@@ -15,6 +15,42 @@ def rule(kind, pid, day=0, slot=0, weeks=None):
 
 
 class CoreTests(unittest.TestCase):
+    def test_solver_progress_and_cancellation(self):
+        import threading
+        phases = []
+        result, _ = solve_schedule(people(), 1, {'0:0': 1}, [], progress=phases.append)
+        self.assertEqual(len(result['0:0']), 1)
+        self.assertIn('满足班次人数', phases)
+        event = threading.Event()
+        def cancel(label):
+            event.set()
+        with self.assertRaises(InterruptedError):
+            solve_schedule(people(), 1, {'0:0': 1}, [], progress=cancel, cancel_event=event)
+
+    def test_multiline_and_time_only_courses(self):
+        courses, errors, warnings = parse_course_cell('课程名称\n（分组说明）\n教师甲\n1-5（周）【01-02节】\n地点第一行\n地点第二行', 0, 460, 560, 'B4')
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(courses[0]['name'], '课程名称\n（分组说明）')
+        self.assertEqual(courses[0]['location'], '地点第一行\n地点第二行')
+        courses, errors, warnings = parse_course_cell('1-5(周)[01-02节]', 0, 460, 560, 'B4')
+        self.assertEqual(errors, [])
+        self.assertTrue(warnings)
+        self.assertEqual(courses[0]['name'], '')
+        p = people()[0]
+        p.courses, p.warnings = courses, warnings
+        self.assertFalse(available(p, 1, 0, 0))
+        self.assertTrue(available(p, 1, 1, 0))
+        result, _ = solve_schedule([p], 1, {'0:0': 1, '1:0': 1}, [])
+        self.assertEqual(result, {'0:0': [], '1:0': [p.id]})
+        courses, errors, warnings = parse_course_cell('课程\n教师\n1-2(周)[01-02节]\n地点\n另一门\n教师\n3-4(周)[01-02节]\n地点', 0, 460, 560, 'B4')
+        self.assertEqual(errors, [])
+        self.assertEqual(len(courses), 2)
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(all(c['name'] == '' for c in courses))
+        _, errors, _ = parse_course_cell('坏周次(周)[01-02节]', 0, 460, 560, 'B4')
+        self.assertTrue(errors)
+
     def test_source(self):
         source = Path(__file__).parent / 'examples' / 'sample_20243006951.xls'
         if not source.exists():

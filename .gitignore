@@ -7,3 +7,8 @@ examples/
 *.spec
 *.zip
 installed.flag
+dist/
+browser-version/node_modules/
+browser-version/runtime/node.exe
+browser-version/tests/*.png
+*.lnk
