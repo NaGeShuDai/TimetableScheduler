@@ -16,6 +16,7 @@ DATA = (Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'TimetableScheduler' /
         if (ROOT / 'installed.flag').exists() else ROOT / 'data' / 'workspace.json')
 BG, INK, GREEN, ORANGE = '#F4F6F7', '#263238', '#157347', '#B65E00'
 if sys.platform == 'win32':
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('NaGeShuDai.TimetableScheduler')
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
@@ -31,7 +32,11 @@ class Application(tk.Tk):
         if not icon.exists() and getattr(sys, 'frozen', False):
             icon = Path(sys._MEIPASS) / 'resources' / 'app.ico'
         if icon.exists():
-            self.iconbitmap(str(icon))
+            self.iconbitmap(default=str(icon))
+        png = icon.with_name('app-icon.png')
+        if png.exists():
+            self._app_icon = tk.PhotoImage(file=str(png))
+            self.iconphoto(True, self._app_icon)
         self.geometry('1320x860')
         self.minsize(1000, 700)
         self.configure(bg=BG)

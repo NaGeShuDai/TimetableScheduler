@@ -29,8 +29,8 @@ begin
 end;
 
 [Icons]
-Name: "{userprograms}\空课与排班"; Filename: "{app}\TimetableScheduler.exe"
-Name: "{userdesktop}\空课与排班"; Filename: "{app}\TimetableScheduler.exe"
+Name: "{userprograms}\空课与排班"; Filename: "{app}\TimetableScheduler.exe"; IconFilename: "{app}\resources\app.ico"; AppUserModelID: "NaGeShuDai.TimetableScheduler"
+Name: "{userdesktop}\空课与排班"; Filename: "{app}\TimetableScheduler.exe"; IconFilename: "{app}\resources\app.ico"; AppUserModelID: "NaGeShuDai.TimetableScheduler"
 
 [Run]
 Filename: "{app}\TimetableScheduler.exe"; Description: "启动空课与排班"; Flags: nowait postinstall skipifsilent
