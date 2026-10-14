@@ -17,6 +17,8 @@ def rule(kind, pid, day=0, slot=0, weeks=None):
 class CoreTests(unittest.TestCase):
     def test_source(self):
         source = Path(__file__).parent / 'examples' / 'sample_20243006951.xls'
+        if not source.exists():
+            self.skipTest('Private source timetable is not distributed with the repository')
         p = parse_timetable(str(source))
         self.assertEqual(p.name, '陈锦瀚')
         self.assertEqual(p.id, '20243006951')
