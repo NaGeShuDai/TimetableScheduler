@@ -92,7 +92,7 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 export_template(path, [], [1])
             p = people()[0]
-            p.department = '运营采编部'
+            p.department = '不存在的部门'
             with self.assertRaises(ValueError):
                 export_template(path, [p], [1])
             self.assertFalse(path.exists())

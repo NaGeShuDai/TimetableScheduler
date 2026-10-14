@@ -9,7 +9,7 @@ SLOTS = [
     ('中午节次(二)', '13:05-14:20'),
 ]
 DAYS = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
-DEPARTMENTS = ['办公室', '采编部', '运营部', '技术部', '设计部']
+DEPARTMENTS = ['办公室', '运营采编部', '技术部', '设计部']
 
 
 def weeks_from_text(text):
@@ -318,7 +318,7 @@ def export_template(path, people, weeks, total=False):
             xml = ET.fromstring(data)
             existing = {c.attrib['r']: c for c in xml.findall('.//m:sheetData/m:row/m:c', ns)}
             for slot in range(5):
-                for row in range(2 + slot * 5, 7 + slot * 5):
+                for row in range(2 + slot * 4, 6 + slot * 4):
                     department_cell = existing.get(f'B{row}')
                     department = ''.join(department_cell.itertext()) if department_cell is not None else ''
                     if department_cell is not None and department_cell.get('t') == 's':

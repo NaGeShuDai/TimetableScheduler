@@ -130,12 +130,16 @@ class Application(tk.Tk):
                 for p in self.people:
                     p.notes = []
                     p.notes_confirmed = True
+                    if p.department in ['采编部', '运营部']:
+                        p.department = '运营采编部'
                 self.rules = data.get('rules', [])
                 self.schedules = data.get('schedules', {})
                 self.slots = data.get('slots', self.slots)
                 self.custom_slots = data.get('custom_slots', self.slots)
                 self.slot_mode = data.get('slot_mode', 'default' if self.slots == [list(s) for s in SLOTS] else 'custom')
                 self.default_department = data.get('default_department', '办公室')
+                if self.default_department in ['采编部', '运营部']:
+                    self.default_department = '运营采编部'
                 self.demands = data.get('demands', self.demands)
                 self.fairness_threshold = data.get('fairness_threshold', 100)
             except Exception as exc:
@@ -283,9 +287,16 @@ class Application(tk.Tk):
             tree.heading(key, text=title)
             tree.column(key, width=width)
         tree.pack(fill='both', expand=True)
-        for c in p.courses:
+        for index, c in enumerate(p.courses):
             clock = f'{c["start"] // 60:02}:{c["start"] % 60:02}-{c["end"] // 60:02}:{c["end"] % 60:02}'
-            tree.insert('', 'end', values=(c['name'], DAYS[c['day']], clock, ','.join(map(str, c['weeks'])), c['location']))
+            tree.insert('', 'end', iid=str(index), values=(c['name'], DAYS[c['day']], clock, ','.join(map(str, c['weeks'])), c['location']))
+        def edit_selected():
+            if tree.selection():
+                self.add_course(p, int(tree.selection()[0]), lambda: dialog.destroy())
+            else:
+                messagebox.showinfo('选择课程', '请先选中要修改的课程。', parent=dialog)
+        ttk.Button(body, text='修改选中课程', command=edit_selected).pack(anchor='w', pady=8)
+        tree.bind('<Double-1>', lambda event: edit_selected())
         confirmed = tk.BooleanVar(value=p.errors_confirmed)
         if p.errors:
             notes = tk.Text(body, height=5, wrap='word', font=('Microsoft YaHei UI', 10))
@@ -302,14 +313,16 @@ class Application(tk.Tk):
             dialog.destroy()
         ttk.Button(body, text='保存', command=commit).pack(anchor='e', pady=8)
 
-    def add_course(self):
+    def add_course(self, person=None, course_index=None, on_saved=None):
         if self.guarded():
             return
-        p = self.selected_person()
+        p = person or self.selected_person()
         if not p:
             return
         dialog = tk.Toplevel(self)
-        dialog.title(p.name + ' · 增加课程')
+        editing = course_index is not None
+        course = p.courses[course_index] if editing else None
+        dialog.title(p.name + (' · 修改课程' if editing else ' · 增加课程'))
         body = ttk.Frame(dialog, padding=20)
         body.pack()
         fields = {}
@@ -320,9 +333,16 @@ class Application(tk.Tk):
             entry.insert(0, default)
             entry.grid(row=i, column=1)
             fields[key] = entry
+        if editing:
+            values = dict(name=course['name'], weeks=compact_weeks(course['weeks']),
+                          time=f'{course["start"] // 60:02}:{course["start"] % 60:02}-{course["end"] // 60:02}:{course["end"] % 60:02}',
+                          location=course.get('location', ''))
+            for key, value in values.items():
+                fields[key].delete(0, 'end')
+                fields[key].insert(0, value)
         ttk.Label(body, text='星期').grid(row=4, column=0, pady=8)
         day = ttk.Combobox(body, values=DAYS, state='readonly', width=34)
-        day.current(0)
+        day.current(course['day'] if editing else 0)
         day.grid(row=4, column=1)
         def commit():
             if self.guarded():
@@ -333,14 +353,20 @@ class Application(tk.Tk):
                     raise ValueError('请输入课程名称')
                 weeks = weeks_from_text(fields['weeks'].get())
                 start, end = time_range(fields['time'].get().strip())
-                p.courses.append(dict(name=name, teacher='', weeks=weeks, day=day.current(),
-                    periods=[], start=start, end=end, location=fields['location'].get().strip(),
-                    raw='', cell='手动', conservative=False, manual=True))
+                if editing:
+                    course.update(name=name, weeks=weeks, day=day.current(), start=start, end=end,
+                                  location=fields['location'].get().strip(), conservative=False, edited=True)
+                else:
+                    p.courses.append(dict(name=name, teacher='', weeks=weeks, day=day.current(),
+                        periods=[], start=start, end=end, location=fields['location'].get().strip(),
+                        raw='', cell='手动', conservative=False, manual=True))
                 self.invalidate()
                 dialog.destroy()
+                if on_saved:
+                    on_saved()
             except ValueError as exc:
                 messagebox.showerror('课程无效', str(exc), parent=dialog)
-        ttk.Button(body, text='增加课程', command=commit).grid(row=5, column=1, sticky='e', pady=12)
+        ttk.Button(body, text='保存修改' if editing else '增加课程', command=commit).grid(row=5, column=1, sticky='e', pady=12)
 
     def toggle_person(self):
         if self.guarded():
