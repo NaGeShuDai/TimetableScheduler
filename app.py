@@ -9,7 +9,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
-from core import Person, SLOTS, DAYS, parse_timetable, available, candidates, rule_matches, solve_schedule, export_grid, export_template, time_range, weeks_from_text, total_free_cells, compact_weeks
+from core import Person, SLOTS, DAYS, DEPARTMENTS, parse_timetable, available, candidates, rule_matches, solve_schedule, export_grid, export_template, time_range, weeks_from_text, total_free_cells, compact_weeks
 
 ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA = (Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'TimetableScheduler' / 'data' / 'workspace.json'
@@ -34,6 +34,7 @@ class Application(tk.Tk):
         self.slots = [list(s) for s in SLOTS]
         self.custom_slots = [list(s) for s in SLOTS]
         self.slot_mode = 'default'
+        self.default_department = '办公室'
         self.demands = {f'{d}:{s}': 1 for d in range(5) for s in range(5)}
         self.busy = False
         self.fairness_threshold = 100
@@ -105,6 +106,7 @@ class Application(tk.Tk):
                 self.slots = data.get('slots', self.slots)
                 self.custom_slots = data.get('custom_slots', self.slots)
                 self.slot_mode = data.get('slot_mode', 'default' if self.slots == [list(s) for s in SLOTS] else 'custom')
+                self.default_department = data.get('default_department', '办公室')
                 self.demands = data.get('demands', self.demands)
                 self.fairness_threshold = data.get('fairness_threshold', 100)
             except Exception as exc:
@@ -116,7 +118,7 @@ class Application(tk.Tk):
         DATA.parent.mkdir(parents=True, exist_ok=True)
         tmp = DATA.with_suffix('.tmp')
         tmp.write_text(json.dumps(dict(people=[p.to_dict() for p in self.people], rules=self.rules,
-            schedules=self.schedules, slots=self.slots, custom_slots=self.custom_slots, slot_mode=self.slot_mode, demands=self.demands,
+            schedules=self.schedules, slots=self.slots, custom_slots=self.custom_slots, slot_mode=self.slot_mode, demands=self.demands, default_department=self.default_department,
             fairness_threshold=self.threshold.get() if hasattr(self, 'threshold') else self.fairness_threshold), ensure_ascii=False, indent=2), encoding='utf-8')
         os.replace(tmp, DATA)
 
@@ -161,6 +163,18 @@ class Application(tk.Tk):
             self.person_tree.heading(key, text=title)
             self.person_tree.column(key, width=width)
         self.person_tree.pack(fill='both', expand=True)
+        department_bar = ttk.Frame(self.person_page, padding=(0, 8))
+        department_bar.pack(fill='x', before=self.person_tree)
+        ttk.Label(department_bar, text='默认导入部门').pack(side='left')
+        self.import_department = tk.StringVar(value=self.default_department)
+        box = ttk.Combobox(department_bar, values=DEPARTMENTS, textvariable=self.import_department, state='readonly', width=16)
+        box.pack(side='left', padx=8)
+        box.bind('<<ComboboxSelected>>', lambda e: self.set_default_department())
+        ttk.Button(department_bar, text='将选中人员改为此部门', command=self.bulk_department).pack(side='left')
+        self.person_tree.configure(selectmode='extended')
+        self.person_tree['columns'] = ('name', 'id', 'term', 'group', 'courses', 'state', 'department')
+        self.person_tree.heading('department', text='部门')
+        self.person_tree.column('department', width=110)
         self.person_tree.bind('<Double-1>', lambda e: self.person_details())
         self.person_tree.tag_configure('warning', foreground=ORANGE)
 
@@ -171,6 +185,23 @@ class Application(tk.Tk):
             return None
         return next(p for p in self.people if p.id == selection[0])
 
+    def set_default_department(self):
+        self.default_department = self.import_department.get()
+        self.persist()
+
+    def bulk_department(self):
+        if self.guarded():
+            return
+        selection = set(self.person_tree.selection())
+        if not selection:
+            messagebox.showinfo('选择人员', '请先选择人员，可使用 Ctrl 或 Shift 多选。')
+            return
+        for p in self.people:
+            if p.id in selection:
+                p.department = self.import_department.get()
+        self.invalidate()
+        self.status.set(f'已更新 {len(selection)} 人的部门为 {self.import_department.get()}。')
+
     def import_people(self):
         if self.guarded():
             return
@@ -179,6 +210,7 @@ class Application(tk.Tk):
         for path in paths:
             try:
                 p = parse_timetable(path)
+                p.department = self.default_department
                 if self.people and p.term != self.term():
                     raise ValueError(f'学期 {p.term or "未知"} 与当前学期 {self.term()} 不一致')
                 old = next((x for x in self.people if x.id == p.id), None)
@@ -213,7 +245,7 @@ class Application(tk.Tk):
         campus.set(p.campus)
         campus.pack(side='left', padx=8)
         ttk.Label(assignment, text='部门').pack(side='left')
-        department = ttk.Combobox(assignment, values=['办公室', '运营采编部', '技术部', '设计部'], state='readonly', width=16)
+        department = ttk.Combobox(assignment, values=DEPARTMENTS, state='readonly', width=16)
         department.set(p.department)
         department.pack(side='left', padx=8)
         ttk.Label(body, text='晚间第 9～10 节暂按整行 19:20–21:55 占用；可在时段设置中查看时间。').pack(anchor='w', pady=8)
@@ -418,7 +450,7 @@ class Application(tk.Tk):
                 state = '解析异常，不能参与'
             elif p.errors:
                 state = '异常已确认' if p.enabled else '已停用'
-            self.person_tree.insert('', 'end', iid=p.id, values=(p.name, p.id, p.term, p.group, len(p.courses), state),
+            self.person_tree.insert('', 'end', iid=p.id, values=(p.name, p.id, p.term, p.group, len(p.courses), state, p.department),
                                     tags=('warning',) if p.errors and not p.errors_confirmed else ())
         self.refresh_rules()
         self.refresh_free()

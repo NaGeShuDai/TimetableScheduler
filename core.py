@@ -9,6 +9,7 @@ SLOTS = [
     ('中午节次(二)', '13:05-14:20'),
 ]
 DAYS = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
+DEPARTMENTS = ['办公室', '采编部', '运营部', '技术部', '设计部']
 
 
 def weeks_from_text(text):
@@ -292,18 +293,25 @@ def export_template(path, people, weeks, total=False):
     if not template.exists() and getattr(sys, 'frozen', False):
         template = Path(sys._MEIPASS) / 'resources' / 'free_template.xlsx'
     ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-    departments = ['办公室', '运营采编部', '技术部', '设计部']
     replacements = {}
     # Preserve every ZIP member except the values of the 140 roster cells per sheet.
     with zipfile.ZipFile(template) as source:
+        strings = []
+        if 'xl/sharedStrings.xml' in source.namelist():
+            strings = [''.join(si.itertext()) for si in ET.fromstring(source.read('xl/sharedStrings.xml'))]
         for sheet_index, campus in enumerate(['海甸', '观澜湖'], 1):
             member = f'xl/worksheets/sheet{sheet_index}.xml'
             data = source.read(member).decode('utf-8')
             xml = ET.fromstring(data)
             existing = {c.attrib['r']: c for c in xml.findall('.//m:sheetData/m:row/m:c', ns)}
             for slot in range(5):
-                for department_index, department in enumerate(departments):
-                    row = 2 + slot * 4 + department_index
+                for row in range(2 + slot * 5, 7 + slot * 5):
+                    department_cell = existing.get(f'B{row}')
+                    department = ''.join(department_cell.itertext()) if department_cell is not None else ''
+                    if department_cell is not None and department_cell.get('t') == 's':
+                        department = strings[int(department)]
+                    if department not in DEPARTMENTS:
+                        raise ValueError('模板部门无法识别：' + department)
                     for day in range(7):
                         coord = f'{chr(67 + day)}{row}'
                         lines = []
@@ -320,7 +328,7 @@ def export_template(path, people, weeks, total=False):
                         from xml.sax.saxutils import escape
                         value = escape('\n'.join(lines))
                         replacement = f'<c r="{coord}" s="{style}" t="inlineStr"><is><t xml:space="preserve">{value}</t></is></c>'
-                        pattern = rf'<c\b[^>]*\br="{coord}"[^>]*(?:/>|>.*?</c>)'
+                        pattern = rf'<c\b[^>]*\br="{coord}"[^>]*?(?:/>|>.*?</c>)'
                         data, count = re.subn(pattern, lambda _: replacement, data, count=1, flags=re.S)
                         if count != 1:
                             raise ValueError('无法匹配模板单元格：' + coord)

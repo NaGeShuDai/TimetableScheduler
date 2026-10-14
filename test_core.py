@@ -81,7 +81,7 @@ class CoreTests(unittest.TestCase):
                 for name in before.namelist():
                     a, b = before.read(name), after.read(name)
                     if name in ['xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml']:
-                        pattern = rb'<c\b[^>]*\br="[C-I](?:[2-9]|1[0-9]|2[01])"[^>]*(?:/>|>.*?</c>)'
+                        pattern = rb'<c\b[^>]*\br="[C-I](?:[2-9]|1[0-9]|2[0-6])"[^>]*?(?:/>|>.*?</c>)'
                         a, b = re.sub(pattern, b'', a, flags=re.S), re.sub(pattern, b'', b, flags=re.S)
                     self.assertEqual(a, b, name)
 

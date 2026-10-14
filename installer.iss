@@ -1,7 +1,7 @@
 [Setup]
 AppId=TimetableScheduler
 AppName=空课与排班
-AppVersion=1.2.0
+AppVersion=1.3.0
 DefaultDirName={localappdata}\Programs\TimetableScheduler
 DisableDirPage=no
 PrivilegesRequired=lowest
