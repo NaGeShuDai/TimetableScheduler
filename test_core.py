@@ -109,6 +109,18 @@ class CoreTests(unittest.TestCase):
         result, _ = solve_schedule(people(), 1, {'0:0': 1}, [rule('prefer', '1'), rule('prefer', '2')])
         self.assertEqual(result['0:0'], ['1'])
 
+    def test_multi_person_rules(self):
+        r = dict(kind='fixed', people=['0', '1'], day=0, slot=0, weeks=[], enabled=True)
+        result, _ = solve_schedule(people(), 1, {'0:0': 2}, [r])
+        self.assertEqual(set(result['0:0']), {'0', '1'})
+        with self.assertRaises(ValueError):
+            solve_schedule(people(), 1, {'0:0': 1}, [r])
+        r['kind'] = 'exclude'
+        self.assertEqual(candidates(people(), 1, 0, 0, [r]), ['2'])
+        r['kind'] = 'prefer'
+        result, _ = solve_schedule(people(), 1, {'0:0': 2}, [r])
+        self.assertEqual(set(result['0:0']), {'0', '1'})
+
     def test_balance_and_shortage(self):
         result, _ = solve_schedule(people(), 1, {'0:0': 1, '1:0': 1, '2:0': 1}, [])
         self.assertEqual(sorted(pid for ids in result.values() for pid in ids), ['0', '1', '2'])

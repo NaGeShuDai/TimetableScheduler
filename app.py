@@ -9,7 +9,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
-from core import Person, SLOTS, DAYS, DEPARTMENTS, parse_timetable, available, candidates, rule_matches, solve_schedule, export_grid, export_template, time_range, weeks_from_text, total_free_cells, compact_weeks
+from core import Person, SLOTS, DAYS, DEPARTMENTS, parse_timetable, available, candidates, rule_people, rule_matches, solve_schedule, export_grid, export_template, time_range, weeks_from_text, total_free_cells, compact_weeks
 
 ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA = (Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'TimetableScheduler' / 'data' / 'workspace.json'
@@ -27,6 +27,11 @@ class Application(tk.Tk):
         super().__init__()
         self.tk.call('tk', 'scaling', 4 / 3)
         self.title('空课与排班')
+        icon = ROOT / 'resources' / 'app.ico'
+        if not icon.exists() and getattr(sys, 'frozen', False):
+            icon = Path(sys._MEIPASS) / 'resources' / 'app.ico'
+        if icon.exists():
+            self.iconbitmap(str(icon))
         self.geometry('1320x860')
         self.minsize(1000, 700)
         self.configure(bg=BG)
@@ -327,7 +332,9 @@ class Application(tk.Tk):
         p = self.selected_person()
         if p and messagebox.askyesno('移除人员', '确定移除 ' + p.name + ' 的课表及关联规则？'):
             self.people.remove(p)
-            self.rules = [r for r in self.rules if r['person'] != p.id]
+            for r in self.rules:
+                r['people'] = [pid for pid in rule_people(r) if pid != p.id]
+            self.rules = [r for r in self.rules if rule_people(r)]
             self.invalidate()
 
     def grid_container(self, page):
@@ -567,7 +574,7 @@ class Application(tk.Tk):
         pool = candidates(self.people, self.current_week(), day, slot, self.rules, self.slots)
         if len(set(ids)) != len(ids) or any(pid not in pool for pid in ids):
             return True
-        fixed = {r['person'] for r in self.rules if r['kind'] == 'fixed' and rule_matches(r, self.current_week(), day, slot)}
+        fixed = {pid for r in self.rules if r['kind'] == 'fixed' and rule_matches(r, self.current_week(), day, slot) for pid in rule_people(r)}
         if not fixed.issubset(ids):
             return True
         a, b = time_range(self.slots[slot][1])
@@ -587,7 +594,8 @@ class Application(tk.Tk):
         for i, r in enumerate(self.rules):
             scope = (DAYS[r['day']] if r['day'] is not None else '每天') + ' / ' + (self.slots[r['slot']][0] if r['slot'] is not None else '全部节次')
             weeks = ','.join(map(str, r.get('weeks', []))) or '全部'
-            self.rule_list.insert('end', f'{i + 1}. {"✓" if r.get("enabled", True) else "停"} {kinds[r["kind"]]} {names.get(r["person"], "未知")}\n{scope} · 周次 {weeks}')
+            selected_names = '、'.join(names.get(pid, '未知') for pid in rule_people(r))
+            self.rule_list.insert('end', f'{i + 1}. {"✓" if r.get("enabled", True) else "停"} {kinds[r["kind"]]} {selected_names}\n{scope} · 周次 {weeks}')
 
     def rule_index(self):
         selection = self.rule_list.curselection()
@@ -611,13 +619,20 @@ class Application(tk.Tk):
         kinds = ['禁止安排', '固定安排', '优先安排']
         keys = ['exclude', 'fixed', 'prefer']
         person_choices = [f'{p.name}（{p.id}）' for p in self.people]
-        values = [kinds[keys.index(r['kind'])], person_choices[next(i for i, p in enumerate(self.people) if p.id == r['person'])],
+        values = [kinds[keys.index(r['kind'])], '',
                   '全部星期' if r['day'] is None else DAYS[r['day']], '全部节次' if r['slot'] is None else self.slots[r['slot']][0]]
         boxes = []
         for i, (label, choices) in enumerate([('类型', kinds), ('人员', person_choices), ('星期', ['全部星期'] + DAYS), ('节次', ['全部节次'] + [s[0] for s in self.slots])]):
             ttk.Label(body, text=label).grid(row=i, column=0, sticky='w', padx=8, pady=8)
-            box = ttk.Combobox(body, values=choices, state='readonly', width=32)
-            box.set(values[i])
+            if i == 1:
+                box = tk.Listbox(body, selectmode='extended', exportselection=False, height=8, width=36)
+                for j, choice in enumerate(choices):
+                    box.insert('end', choice)
+                    if self.people[j].id in rule_people(r):
+                        box.selection_set(j)
+            else:
+                box = ttk.Combobox(body, values=choices, state='readonly', width=32)
+                box.set(values[i])
             box.grid(row=i, column=1, pady=8)
             boxes.append(box)
         ttk.Label(body, text='周次（空白为全部）').grid(row=4, column=0, padx=8, pady=8)
@@ -630,7 +645,10 @@ class Application(tk.Tk):
             if self.guarded():
                 return
             try:
-                new = dict(kind=keys[boxes[0].current()], person=self.people[boxes[1].current()].id,
+                selected = [self.people[j].id for j in boxes[1].curselection()]
+                if not selected:
+                    raise ValueError('请至少选择一位人员（Ctrl/Shift 可多选）')
+                new = dict(kind=keys[boxes[0].current()], people=selected,
                            day=None if boxes[2].current() == 0 else boxes[2].current() - 1,
                            slot=None if boxes[3].current() == 0 else boxes[3].current() - 1,
                            weeks=weeks_from_text(week_text.get()) if week_text.get().strip() else [], enabled=enabled.get())
@@ -732,14 +750,14 @@ class Application(tk.Tk):
             if other != key and day == od and a < y and x < b:
                 pool = [pid for pid in pool if pid not in assigned]
         def rank(pid):
-            priorities = [i for i, r in enumerate(self.rules) if r['person'] == pid and r['kind'] == 'prefer' and rule_matches(r, w, day, slot)]
+            priorities = [i for i, r in enumerate(self.rules) if pid in rule_people(r) and r['kind'] == 'prefer' and rule_matches(r, w, day, slot)]
             return (min(priorities, default=len(self.rules)), loads.get(pid, 0), pid)
         pool.sort(key=rank)
         names = {p.id: p.name for p in self.people}
         labels = ['（空缺）']
         for pid in pool:
             added = 0 if pid in ids else b - a
-            preferred = any(r['person'] == pid and r['kind'] == 'prefer' and rule_matches(r, w, day, slot) for r in self.rules)
+            preferred = any(pid in rule_people(r) and r['kind'] == 'prefer' and rule_matches(r, w, day, slot) for r in self.rules)
             labels.append(f'{names[pid]}（{pid}） · 当前 {loads.get(pid, 0) / 60:.1f}h → { (loads.get(pid, 0) + added) / 60:.1f}h' + (' · 优先' if preferred else ''))
         dialog = tk.Toplevel(self)
         dialog.title(f'第 {w} 周 · {DAYS[day]} · {self.slots[slot][0]}')

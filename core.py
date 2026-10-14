@@ -155,6 +155,10 @@ def available(person, week, day, slot, slots=SLOTS):
                    for c in person.courses)
 
 
+def rule_people(rule):
+    return rule.get('people', [rule['person']] if 'person' in rule else [])
+
+
 def rule_matches(rule, week, day, slot):
     return rule.get('enabled', True) and (not rule.get('weeks') or week in rule['weeks']) and \
         (rule['day'] is None or rule['day'] == day) and (rule['slot'] is None or rule['slot'] == slot)
@@ -162,7 +166,7 @@ def rule_matches(rule, week, day, slot):
 
 def candidates(people, week, day, slot, rules, slots=SLOTS):
     pool = [p.id for p in people if available(p, week, day, slot, slots)]
-    exclusions = {r['person'] for r in rules if r['kind'] == 'exclude' and rule_matches(r, week, day, slot)}
+    exclusions = {pid for r in rules if r['kind'] == 'exclude' and rule_matches(r, week, day, slot) for pid in rule_people(r)}
     return [pid for pid in pool if pid not in exclusions]
 
 
@@ -180,7 +184,7 @@ def solve_schedule(people, week, demands, rules, slots=SLOTS, locked=None):
         model.add(sum(variables[key, pid] for pid in pool) <= count)
     for key, count in demands.items():
         day, slot = map(int, key.split(':'))
-        fixed = {r['person'] for r in rules if r['kind'] == 'fixed' and rule_matches(r, week, day, slot)}
+        fixed = {pid for r in rules if r['kind'] == 'fixed' and rule_matches(r, week, day, slot) for pid in rule_people(r)}
         if locked and key in locked:
             fixed.update(locked[key])
         if len(fixed) > count:
@@ -215,7 +219,7 @@ def solve_schedule(people, week, demands, rules, slots=SLOTS, locked=None):
     objectives = []
     for r in rules:
         if r['kind'] == 'prefer' and r.get('enabled', True):
-            expr = sum(v for (k, p), v in variables.items() if p == r['person'] and
+            expr = sum(v for (k, p), v in variables.items() if p in rule_people(r) and
                        rule_matches(r, week, *map(int, k.split(':'))))
             objectives.append(('自定义优先安排', expr, True))
     objectives.append(('满足班次人数', sum(variables.values()), True))
