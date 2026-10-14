@@ -937,9 +937,10 @@ class Application(tk.Tk):
                 if schedule:
                     export_grid(path, title, w, cells, self.slots, self.term())
                 else:
-                    export_template(path, self.people, weeks if total else [self.current_week()], total)
+                    counts = export_template(path, self.people, weeks if total else [self.current_week()], total)
                 self.status.set('已导出：' + path)
-                messagebox.showinfo('导出完成', '已保存到：\n' + path)
+                detail = '' if schedule else '\n\n名单格数：' + '；'.join(f'{campus} {count} 格' for campus, count in counts.items()) + '\n请查看有名单的校区工作表。'
+                messagebox.showinfo('导出完成', '已保存到：\n' + path + detail)
             except Exception as exc:
                 messagebox.showerror('导出失败', str(exc))
 

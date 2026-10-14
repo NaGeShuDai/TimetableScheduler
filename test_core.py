@@ -85,6 +85,18 @@ class CoreTests(unittest.TestCase):
                         a, b = re.sub(pattern, b'', a, flags=re.S), re.sub(pattern, b'', b, flags=re.S)
                     self.assertEqual(a, b, name)
 
+    def test_template_rejects_silent_empty_export(self):
+        from core import export_template
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'empty.xlsx'
+            with self.assertRaises(ValueError):
+                export_template(path, [], [1])
+            p = people()[0]
+            p.department = '运营采编部'
+            with self.assertRaises(ValueError):
+                export_template(path, [p], [1])
+            self.assertFalse(path.exists())
+
     def test_interval_boundaries(self):
         p = people()[0]
         p.courses = [dict(day=0, weeks=[1], start=440, end=460)]

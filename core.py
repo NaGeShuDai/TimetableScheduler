@@ -298,12 +298,21 @@ def export_template(path, people, weeks, total=False):
         template = Path(sys._MEIPASS) / 'resources' / 'free_template.xlsx'
     ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
     replacements = {}
+    eligible = [p for p in people if p.enabled and (not p.errors or p.errors_confirmed)]
+    invalid = [p for p in eligible if p.campus not in ['海甸', '观澜湖'] or p.department not in DEPARTMENTS]
+    if invalid:
+        raise ValueError('以下人员的校区或部门不匹配模板，请在人员详情或批量修改部门后重试：\n' +
+                         '\n'.join(f'{p.name}：{p.campus} / {p.department}' for p in invalid))
+    if not eligible:
+        raise ValueError('没有可导出的人员。请先导入课表，启用人员，并确认解析异常。')
+    counts = {}
     # Preserve every ZIP member except the values of the 140 roster cells per sheet.
     with zipfile.ZipFile(template) as source:
         strings = []
         if 'xl/sharedStrings.xml' in source.namelist():
             strings = [''.join(si.itertext()) for si in ET.fromstring(source.read('xl/sharedStrings.xml'))]
         for sheet_index, campus in enumerate(['海甸', '观澜湖'], 1):
+            counts[campus] = 0
             member = f'xl/worksheets/sheet{sheet_index}.xml'
             data = source.read(member).decode('utf-8')
             xml = ET.fromstring(data)
@@ -326,6 +335,8 @@ def export_template(path, people, weeks, total=False):
                             if free:
                                 lines.append(f'{person.name} ({compact_weeks(free)})' if total else person.name)
                         cell = existing.get(coord)
+                        if lines:
+                            counts[campus] += 1
                         if cell is None:
                             raise ValueError('模板缺少名单单元格：' + coord)
                         style = cell.get('s', '0')
@@ -337,9 +348,12 @@ def export_template(path, people, weeks, total=False):
                         if count != 1:
                             raise ValueError('无法匹配模板单元格：' + coord)
             replacements[member] = data.encode('utf-8')
+        if not any(counts.values()):
+            raise ValueError('所选周次在模板五个时段内没有空闲人员，未生成空白文件。请核对教学周、课程及人员状态。')
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as target:
             for info in source.infolist():
                 target.writestr(info, replacements.get(info.filename, source.read(info.filename)))
+    return counts
 
 
 def export_grid(path, title, week, cells, slots=SLOTS, term=''):
