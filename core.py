@@ -88,6 +88,7 @@ def parse_course_cell(text, day, start, end, cell):
     if day not in range(7) or not 0 <= start < end <= 1440:
         return courses, ['无法确定有效的星期或上课时间'], warnings
     normalized = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+    suspicious_marker = r'[（(]\s*(?:单|双)?周\s*[）)]|^\s*\d[^\n]*[（(][^\n]*周|[\[【][^\n]*节'
     # Blank lines separate records; week/period lines anchor the required time data.
     for block in re.split(r'\n[ \t]*\n+', normalized):
         lines = [line.strip() for line in block.splitlines() if line.strip()]
@@ -96,22 +97,23 @@ def parse_course_cell(text, day, start, end, cell):
         markers = []
         for index, line in enumerate(lines):
             canonical = line.translate(str.maketrans('（）【】', '()[]'))
-            match = re.fullmatch(r'([\d\s,，、\-－—]+)\s*\(([^)]*周[^)]*)\)\s*\[([^\]]*节)\]\s*', canonical)
+            match = re.fullmatch(r'([\d\s,，、\-－—]+)\s*\(([^)]*周[^)]*)\)\s*(?:\[([^\]]*节)\])?\s*', canonical)
             if match:
                 markers.append((index, match))
         if not markers:
-            if re.search(r'[（(][^\n]*周|[\[【][^\n]*节', block) or not re.search(r'[（(][^\n]*周[^\n]*[\[【]', normalized):
+            if re.search(suspicious_marker, block, re.M) or not re.search(suspicious_marker, normalized, re.M):
                 errors.append('无法识别周次与节次行')
             else:
                 warnings.append('课程附加信息缺少完整结构，已忽略；已识别的上课时间仍参与统计')
             continue
         marker_indices = {index for index, _ in markers}
         for index, line in enumerate(lines):
-            if index not in marker_indices and re.search(r'[（(][^\n]*周|[\[【][^\n]*节', line):
+            if index not in marker_indices and re.search(suspicious_marker, line):
                 errors.append('存在无法识别的周次与节次行，需要核实')
         for index, match in markers:
             try:
-                if not re.fullmatch(r'\s*\d+(?:[\s,，、\-－—]+\d+)*\s*节', match.group(3)):
+                period_text = match.group(3)
+                if period_text is not None and not re.fullmatch(r'\s*\d+(?:[\s,，、\-－—]+\d+)*\s*节', period_text):
                     raise ValueError('节次格式无效，需要核实')
                 weeks = weeks_from_text(match.group(1))
                 if '单' in match.group(2):
@@ -121,10 +123,12 @@ def parse_course_cell(text, day, start, end, cell):
                 if not weeks:
                     raise ValueError('没有有效教学周')
                 info = lines[:index]
-                incomplete = len(markers) > 1 or len(info) < 2 or index == len(lines) - 1
+                incomplete = period_text is None or len(markers) > 1 or len(info) < 2 or index == len(lines) - 1
+                if period_text is None:
+                    warnings.append('周次行缺少节次标记，已使用左侧行标题的起止时间；仍正常参与空课表与排班')
                 if incomplete:
                     warnings.append('课程信息格式不完整或多门课程边界不清，名称、教师和地点留空；上课时间已保留，无需确认即可参与统计与排班')
-                periods = list(map(int, re.findall(r'\d+', match.group(3))))
+                periods = list(map(int, re.findall(r'\d+', period_text or '')))
                 if len(periods) == 2 and periods[1] > periods[0]:
                     periods = list(range(periods[0], periods[1] + 1))
                 courses.append(dict(name='' if incomplete else '\n'.join(info[:-1]),
@@ -334,7 +338,54 @@ def total_free_cells(people, weeks, slots=SLOTS):
             for d in range(7) for s in range(len(slots))}
 
 
-def export_template(path, people, weeks, total=False):
+def merge_free_tables(paths):
+    merged, mode = {}, None
+    for path in paths:
+        for campus, rows in read_free_sheets(path):
+            for slot in range(5):
+                for dep in range(4):
+                    row = 1 + slot * 4 + dep
+                    if row >= len(rows) or len(rows[row]) < 9 or str(rows[row][1]).strip() != DEPARTMENTS[dep]:
+                        raise ValueError(f'{Path(path).name}：不符合当前四部门空课表模板')
+                    for day in range(7):
+                        text = str(rows[row][day + 2] or '').strip()
+                        for line in text.splitlines():
+                            line = line.strip()
+                            if not line or line in ('无', '—', '-'):
+                                continue
+                            match = re.fullmatch(r'(.+?)\s*[（(]([\d\s,，、\-－—]+)[）)]', line)
+                            current = 'total' if match else 'weekly'
+                            if mode and mode != current:
+                                raise ValueError('不能混合汇总周空课表和带周次的总空课表')
+                            mode = current
+                            name = match.group(1).strip() if match else line
+                            key = (campus, dep, slot, day)
+                            names = merged.setdefault(key, {})
+                            names.setdefault(name, set()).update(weeks_from_text(match.group(2)) if match else [])
+    if not merged:
+        raise ValueError('未读取到名单，请选择当前模板导出的空课表')
+    return {key: '\n'.join(f'{name} ({compact_weeks(ws)})' if mode == 'total' else name for name, ws in sorted(names.items())) for key, names in merged.items()}
+
+
+def read_free_sheets(path):
+    if Path(path).suffix.lower() == '.xls':
+        import xlrd
+        book = xlrd.open_workbook(path)
+        sheets = [(sheet.name, [sheet.row_values(r) for r in range(sheet.nrows)]) for sheet in book.sheets()]
+    else:
+        from openpyxl import load_workbook
+        book = load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheets = [(sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)]) for sheet in book.worksheets]
+        finally:
+            book.close()
+    selected = [(name, rows) for name, rows in sheets if name in ('海甸', '观澜湖')]
+    if not selected:
+        raise ValueError(f'{Path(path).name}：缺少海甸或观澜湖工作表')
+    return selected
+
+
+def export_template(path, people, weeks, total=False, roster=None):
     import sys
     import zipfile
     import xml.etree.ElementTree as ET
@@ -349,7 +400,7 @@ def export_template(path, people, weeks, total=False):
     if invalid:
         raise ValueError('以下人员的校区或部门不匹配模板，请在人员详情或批量修改部门后重试：\n' +
                          '\n'.join(f'{p.name}：{p.campus} / {p.department}' for p in invalid))
-    if not eligible:
+    if not eligible and roster is None:
         raise ValueError('没有可导出的人员。请先导入课表，启用人员，并确认解析异常。')
     counts = {}
     # Preserve every ZIP member except the values of the 140 roster cells per sheet.
@@ -380,6 +431,8 @@ def export_template(path, people, weeks, total=False):
                             free = [w for w in weeks if available(person, w, day, slot, SLOTS)]
                             if free:
                                 lines.append(f'{person.name} ({compact_weeks(free)})' if total else person.name)
+                        if roster is not None:
+                            lines = roster.get((campus, DEPARTMENTS.index(department), slot, day), '').splitlines()
                         cell = existing.get(coord)
                         if lines:
                             counts[campus] += 1

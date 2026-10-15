@@ -3,6 +3,12 @@ import solver from 'javascript-lp-solver';
 import {unzipSync,zipSync,strFromU8,strToU8} from 'fflate';
 export const DAYS=['星期一','星期二','星期三','星期四','星期五','星期六','星期日'];
 export const DEPTS=['办公室','运营采编部','技术部','设计部'];
+export function mergeFreeTables(files){
+ const merged=new Map();let mode=null;
+ for(const file of files){const book=XLSX.read(file.buffer,{type:'array'}),campuses=book.SheetNames.filter(n=>['海甸','观澜湖'].includes(n));if(!campuses.length)throw Error(file.name+'：缺少校区工作表');
+ for(const campus of campuses){const rows=XLSX.utils.sheet_to_json(book.Sheets[campus],{header:1,defval:''});for(let s=0;s<5;s++)for(let dep=0;dep<4;dep++){const row=1+s*4+dep;if(String(rows[row]?.[1]).trim()!==DEPTS[dep])throw Error(file.name+'：不符合当前四部门模板');for(let d=0;d<7;d++)for(const raw of String(rows[row]?.[d+2]||'').split(/\r?\n/)){const line=raw.trim();if(!line||['无','—','-'].includes(line))continue;const match=line.match(/^(.+?)\s*[（(]([\d\s,，、\-－—]+)[）)]$/),type=match?'total':'weekly';if(mode&&mode!==type)throw Error('不能混合周空课表和带周次的总空课表');mode=type;const name=match?match[1].trim():line,key=[campus,dep,s,d].join('|');if(!merged.has(key))merged.set(key,new Map());const names=merged.get(key);if(!names.has(name))names.set(name,new Set());if(match)weeks(match[2]).forEach(w=>names.get(name).add(w))}}}}
+ if(!merged.size)throw Error('未读取到名单');return Object.fromEntries([...merged].map(([key,names])=>[key,[...names].sort(([a],[b])=>a.localeCompare(b,'zh')).map(([name,ws])=>mode==='total'?name+' ('+compact([...ws])+')':name).join('\n')]));
+}
 export const SLOTS=[['1、2节','07:40-09:20'],['3、4节','09:45-11:25'],['5、6节','14:30-16:10'],['7、8节','16:35-18:15'],['9、10、11节','19:20-21:55'],['中午节次(一)','11:35-13:05'],['中午节次(二)','13:05-14:20']];
 export function weeks(text){const out=new Set();for(const p of String(text).replace(/[，、]/g,',').replace(/[－—]/g,'-').split(',')){const m=p.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);if(!m)throw Error('周次格式无效');const a=+m[1],b=+(m[2]||m[1]);if(a<1||b>60||a>b)throw Error('周次必须在 1～60 范围内');for(let w=a;w<=b;w++)out.add(w)}return [...out].sort((a,b)=>a-b)}
 export function compact(ws){const a=[...new Set(ws)].sort((a,b)=>a-b),g=[];for(const w of a){if(g.length&&g.at(-1)[1]+1===w)g.at(-1)[1]=w;else g.push([w,w])}return g.map(([a,b])=>a===b?`${a}`:`${a}-${b}`).join(', ')}
@@ -12,25 +18,27 @@ export function parseCourseCell(raw,day,start,end,cell){
  const courses=[],errors=[],warnings=[];
  if(!Number.isInteger(day)||day<0||day>6||!Number.isFinite(start)||!Number.isFinite(end)||start<0||end>1440||start>=end)return{courses,errors:['无法确定有效的星期或上课时间'],warnings};
  const normalized=String(raw).replace(/\r\n?/g,'\n').trim();
+ const suspiciousMarker=/[（(]\s*(?:单|双)?周\s*[）)]|^\s*\d[^\n]*[（(][^\n]*周|[\[【][^\n]*节/m;
  // Blank lines delimit records; the week/period marker delimits each record's fields.
  for(const block of normalized.split(/\n[ \t]*\n+/).filter(s=>s.trim())){
   const lines=block.split('\n').map(s=>s.trim()).filter(Boolean);
   const markers=lines.map((line,index)=>{
    const canonical=line.replace(/（/g,'(').replace(/）/g,')').replace(/【/g,'[').replace(/】/g,']');
-   return {index,match:canonical.match(/^([\d\s,，、\-－—]+)\s*\(([^)]*周[^)]*)\)\s*\[([^\]]*节)\]\s*$/)};
+   return {index,match:canonical.match(/^([\d\s,，、\-－—]+)\s*\(([^)]*周[^)]*)\)\s*(?:\[([^\]]*节)\])?\s*$/)};
   }).filter(m=>m.match);
-  if(markers.length)for(let i=0;i<lines.length;i++)if(/[（(][^\n]*周|[\[【][^\n]*节/.test(lines[i])&&!markers.some(m=>m.index===i))errors.push('存在无法识别的周次与节次行，需要核实');
+  if(markers.length)for(let i=0;i<lines.length;i++)if(suspiciousMarker.test(lines[i])&&!markers.some(m=>m.index===i))errors.push('存在无法识别的周次与节次行，需要核实');
   if(!markers.length){
-   if(/[（(][^\n]*周|[\[【][^\n]*节/.test(block)||!/[（(][^\n]*周[^\n]*[\[【]/.test(normalized))errors.push('无法识别周次与节次行');
+   if(suspiciousMarker.test(block)||!suspiciousMarker.test(normalized))errors.push('无法识别周次与节次行');
    else warnings.push('课程附加信息缺少完整结构，已忽略；已识别的上课时间仍参与统计');
    continue;
   }
   for(const {index,match} of markers)try{
    const info=lines.slice(0,index);
-   if(!/^\s*\d+(?:[\s,，、\-－—]+\d+)*\s*节$/.test(match[3]))throw Error('节次格式无效，需要核实');
+   if(match[3]!==undefined&&!/^\s*\d+(?:[\s,，、\-－—]+\d+)*\s*节$/.test(match[3]))throw Error('节次格式无效，需要核实');
    let ws=weeks(match[1]);if(match[2].includes('单'))ws=ws.filter(w=>w%2);if(match[2].includes('双'))ws=ws.filter(w=>!(w%2));
    if(!ws.length)throw Error('没有有效教学周');
-   const incomplete=markers.length>1||info.length<2||index===lines.length-1;
+   const incomplete=match[3]===undefined||markers.length>1||info.length<2||index===lines.length-1;
+   if(match[3]===undefined)warnings.push('周次行缺少节次标记，已使用左侧行标题的起止时间；仍正常参与空课表与排班');
    if(incomplete)warnings.push('课程信息格式不完整或多门课程边界不清，名称、教师和地点留空；上课时间已保留，无需确认即可参与统计与排班');
    const teacher=incomplete?'':info.at(-1);
    const name=incomplete?'':info.slice(0,-1).join('\n');
@@ -86,5 +94,5 @@ for(const kind of ['evening','weekend']){const objective={};for(let i=0;i<active
 const repeated={};for(const p of active)for(let d=0;d<7;d++){const ns=Object.keys(vars).filter(n=>vars[n].id===p.id&&+vars[n].key.split(':')[0]===d);if(ns.length>1){const n='repeat'+serial++,c='repeatBound'+serial++;model.variables[n]={obj:0,[c]:-1};model.constraints[c]={max:1};ns.forEach(n=>model.variables[n][c]=1);repeated[n]=-1}}objectives.push(repeated);
 let answer={},notes=[];const usedAux=new Set();for(let i=0;i<objectives.length;i++){const custom=state.rules.filter(r=>r.kind==='prefer'&&r.enabled!==false).length;onProgress(i<custom?'优化自定义优先规则':['满足班次人数','均衡总工时','均衡晚班','均衡周末','减少同日多班'][i-custom]);for(const[n,v]of Object.entries(model.variables))v.obj=objectives[i][n]||0;for(const n of Object.keys(objectives[i]))if(!vars[n])usedAux.add(n);const runModel=structuredClone(model),unused=Object.keys(model.variables).filter(n=>!vars[n]&&!usedAux.has(n));const removed=new Set(unused.flatMap(n=>Object.keys(model.variables[n]).filter(c=>c!=='obj'&&model.variables[n][c])));unused.forEach(n=>delete runModel.variables[n]);removed.forEach(c=>delete runModel.constraints[c]);for(const v of Object.values(runModel.variables))for(const c of removed)delete v[c];const started=Date.now(),result=solver.Solve(runModel);if(!result.feasible)throw Error('强制规则或重叠班次冲突，无法生成');if(!result.bounded)throw Error('排班模型异常');const next=Object.fromEntries(keys.map(k=>[k,Object.entries(vars).filter(([n,v])=>v.key===k&&(result[n]||0)>.5).map(([,v])=>v.id)]));const valid=Object.keys(vars).every(n=>Math.abs((result[n]||0)-Math.round(result[n]||0))<1e-6)&&keys.every(k=>next[k].length<=state.demands[k]&&!conflict(state,w,k,next[k],next));if(!valid){if(!Object.keys(answer).length)throw Error('计算未得到有效整数方案，请减少人数或规则后重试');notes.push('计算未完成，保留上一阶段有效方案');break}answer=next;if(Date.now()-started>=timeoutMs){notes.push('达到计算时间限制，当前方案可用，但未保证最优');break}const c='priority'+i;model.constraints[c]={equal:Math.round(result.result*100000)/100000};for(const[n,v]of Object.entries(model.variables))v[c]=objectives[i][n]||0}
 if(notes.length){answer=improveFairness(state,w,answer);notes=['精确优化未完成，已进行受规则约束的公平性调整；当前为近似方案，未保证全局最优']}return{cells:answer,notes}}
-export async function templateExport(state,ws,total){const people=state.people.filter(eligible);if(!people.length)throw Error('没有可导出的人员');if(people.some(p=>!['海甸','观澜湖'].includes(p.campus)||!DEPTS.includes(p.department)))throw Error('请先修正人员校区和部门');const response=await fetch('assets/free_template.xlsx');if(!response.ok)throw Error('无法读取模板');const zip=unzipSync(new Uint8Array(await response.arrayBuffer())),counts={};for(const[index,campus]of ['海甸','观澜湖'].entries()){const name=`xl/worksheets/sheet${index+1}.xml`;let xml=strFromU8(zip[name]);counts[campus]=0;for(let s=0;s<5;s++)for(let dep=0;dep<4;dep++)for(let d=0;d<7;d++){const coord=String.fromCharCode(67+d)+(2+s*4+dep),lines=people.filter(p=>p.campus===campus&&p.department===DEPTS[dep]).map(p=>{const w=ws.filter(w=>free(p,w,d,s,SLOTS));return w.length?(total?`${p.name} (${compact(w)})`:p.name):''}).filter(Boolean);if(lines.length)counts[campus]++;const regex=new RegExp(`<c\\b[^>]*\\br="${coord}"[^>]*?(?:/>|>.*?</c>)`,'s');const old=xml.match(regex);if(!old)throw Error('模板单元格缺失');const style=old[0].match(/\bs="(\d+)"/)?.[1]||'0';const value=lines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');xml=xml.replace(regex,()=>`<c r="${coord}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${value}</t></is></c>`)}zip[name]=strToU8(xml)}if(!Object.values(counts).some(Boolean))throw Error('所选周次没有空闲人员');return{bytes:zipSync(zip),counts}}
+export async function templateExport(state,ws,total,roster=null){const people=state.people.filter(eligible);if(!people.length&&!roster)throw Error('没有可导出的人员');if(people.some(p=>!['海甸','观澜湖'].includes(p.campus)||!DEPTS.includes(p.department)))throw Error('请先修正人员校区和部门');const response=await fetch('assets/free_template.xlsx');if(!response.ok)throw Error('无法读取模板');const zip=unzipSync(new Uint8Array(await response.arrayBuffer())),counts={};for(const[index,campus]of ['海甸','观澜湖'].entries()){const name=`xl/worksheets/sheet${index+1}.xml`;let xml=strFromU8(zip[name]);counts[campus]=0;for(let s=0;s<5;s++)for(let dep=0;dep<4;dep++)for(let d=0;d<7;d++){const coord=String.fromCharCode(67+d)+(2+s*4+dep),lines=roster?(roster[[campus,dep,s,d].join('|')]||'').split('\n').filter(Boolean):people.filter(p=>p.campus===campus&&p.department===DEPTS[dep]).map(p=>{const w=ws.filter(w=>free(p,w,d,s,SLOTS));return w.length?(total?`${p.name} (${compact(w)})`:p.name):''}).filter(Boolean);if(lines.length)counts[campus]++;const regex=new RegExp(`<c\\b[^>]*\\br="${coord}"[^>]*?(?:/>|>.*?</c>)`,'s');const old=xml.match(regex);if(!old)throw Error('模板单元格缺失');const style=old[0].match(/\bs="(\d+)"/)?.[1]||'0';const value=lines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');xml=xml.replace(regex,()=>`<c r="${coord}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${value}</t></is></c>`)}zip[name]=strToU8(xml)}if(!Object.values(counts).some(Boolean))throw Error('所选周次没有空闲人员');return{bytes:zipSync(zip),counts}}
 export function newState(){return{people:[],rules:[],slots:structuredClone(SLOTS),custom_slots:structuredClone(SLOTS),slot_mode:'default',default_department:'办公室',demands:Object.fromEntries(Array.from({length:5},(_,d)=>Array.from({length:5},(_,s)=>[`${d}:${s}`,1])).flat()),schedules:{},threshold:100}}

@@ -5,7 +5,7 @@
 [Setup]
 AppId=TimetableScheduler
 AppName=空课与排班
-AppVersion=1.6.0
+AppVersion=1.7.0
 SetupIconFile=resources\app.ico
 DefaultDirName={localappdata}\Programs\TimetableScheduler
 DisableDirPage=no

@@ -4,6 +4,7 @@ import queue
 import sys
 import threading
 import time
+from core import merge_free_tables
 import traceback
 import ctypes
 import tkinter as tk
@@ -422,6 +423,7 @@ class Application(tk.Tk):
         toolbar.pack(fill='x')
         ttk.Button(toolbar, text='刷新', command=self.refresh_all).pack(side='left')
         ttk.Button(toolbar, text='导出空课表', command=lambda: self.export(False)).pack(side='left', padx=8)
+        ttk.Button(toolbar, text='导入并汇总空课表', command=self.merge_free).pack(side='left', padx=8)
         self.free_mode = tk.StringVar(value='本周空课表')
         mode = ttk.Combobox(toolbar, values=['本周空课表', '总空课表'], textvariable=self.free_mode, state='readonly', width=12)
         mode.pack(side='left', padx=6)
@@ -534,6 +536,35 @@ class Application(tk.Tk):
         for s, (label, clock) in enumerate(self.slots):
             tk.Label(grid, text=label + '\n' + clock, bg='#EEF2F3', fg=INK, font=('Microsoft YaHei UI', 10), padx=5, pady=12).grid(row=s + 1, column=0, sticky='nsew', padx=1, pady=1)
             grid.rowconfigure(s + 1, minsize=86)
+
+    def merge_free(self):
+        if self.guarded():
+            return
+        paths = filedialog.askopenfilenames(title='选择同一周或同一学期的空课表', filetypes=[('Excel 空课表', '*.xlsx *.xls')])
+        if not paths:
+            return
+        try:
+            roster = merge_free_tables(paths)
+        except Exception as exc:
+            messagebox.showerror('汇总失败', str(exc))
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title(f'空课表汇总 · {len(paths)} 份')
+        dialog.geometry('1000x650')
+        text = tk.Text(dialog, wrap='none', font=('Microsoft YaHei UI', 10))
+        text.pack(fill='both', expand=True)
+        for (campus, dep, slot, day), names in sorted(roster.items()):
+            text.insert('end', f'{campus} / {DEPARTMENTS[dep]} / {DAYS[day]} / {SLOTS[slot][0]}\n{names}\n\n')
+        text.configure(state='disabled')
+        def save():
+            path = filedialog.asksaveasfilename(parent=dialog, initialfile='汇总空课表.xlsx', defaultextension='.xlsx', filetypes=[('Excel', '*.xlsx')])
+            if path:
+                try:
+                    export_template(path, [], [], roster=roster)
+                    messagebox.showinfo('汇总完成', '已保存到：' + path, parent=dialog)
+                except Exception as exc:
+                    messagebox.showerror('导出失败', str(exc), parent=dialog)
+        ttk.Button(dialog, text='导出汇总空课表', command=save).pack(pady=8)
 
     def refresh_free(self):
         self.draw_headers(self.free_grid)

@@ -15,6 +15,45 @@ def rule(kind, pid, day=0, slot=0, weeks=None):
 
 
 class CoreTests(unittest.TestCase):
+    def test_week_word_in_course_description(self):
+        raw = '劳动教育实践1-生活劳动\n(周边公共设施维护、公共区域管理及景观养护)\n浦金,张秋爽\n12-15(周)[05-06节]\n图书馆'
+        courses, errors, warnings = parse_course_cell(raw, 2, 870, 970, 'D6')
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+        self.assertIn('周边公共设施', courses[0]['name'])
+        self.assertEqual(courses[0]['weeks'], [12, 13, 14, 15])
+        for bad in ['坏周次(周)[05-06节]', '12-坏(周)', '12-15(周)[坏节次]']:
+            self.assertTrue(parse_course_cell(raw + '\n' + bad, 2, 870, 970, 'D6')[1])
+
+    def test_merge_free_tables(self):
+        from core import merge_free_tables, export_template
+        with tempfile.TemporaryDirectory() as directory:
+            a, b, out = [Path(directory) / name for name in ['a.xlsx', 'b.xlsx', 'out.xlsx']]
+            export_template(a, [], [], roster={('海甸', 1, 0, 0): '甲 (1-3)\n乙 (2)'})
+            export_template(b, [], [], roster={('海甸', 1, 0, 0): '甲 (3-5)', ('观澜湖', 0, 2, 4): '丙 (1)'})
+            merged = merge_free_tables([a, b])
+            self.assertEqual(merged[('海甸', 1, 0, 0)], '乙 (2)\n甲 (1-5)')
+            export_template(out, [], [], roster=merged)
+            self.assertEqual(merge_free_tables([out]), merged)
+            export_template(b, [], [], roster={('海甸', 1, 0, 0): '甲'})
+            with self.assertRaises(ValueError):
+                merge_free_tables([a, b])
+            self.assertEqual(merge_free_tables([b, b])[('海甸', 1, 0, 0)], '甲')
+
+    def test_weeks_without_period_marker(self):
+        courses, errors, warnings = parse_course_cell('电路理论\n1-4,6-9(周)\n教室', 3, 460, 560, 'E4')
+        self.assertEqual(errors, [])
+        self.assertTrue(warnings)
+        self.assertEqual(courses[0]['weeks'], [1, 2, 3, 4, 6, 7, 8, 9])
+        self.assertEqual(courses[0]['periods'], [])
+        self.assertEqual(courses[0]['name'], '')
+        p = people()[0]
+        p.courses, p.warnings = courses, warnings
+        self.assertFalse(available(p, 1, 3, 0))
+        self.assertTrue(available(p, 5, 3, 0))
+        for text in ['课程\n1-4(周)[坏节次]', '课程\n4-1(周)', '课程\n0(周)']:
+            self.assertTrue(parse_course_cell(text, 0, 460, 560, 'B4')[1])
+
     def test_solver_progress_and_cancellation(self):
         import threading
         phases = []

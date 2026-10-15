@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>清除本地数据</title><link rel="stylesheet" href="style.css"></head>
+<body><main><h1>清除本地数据</h1><p id="result" role="status"></p><a href="/">返回首页</a></main><script>
+try { localStorage.removeItem('hnu-browser-scheduler-v1'); document.getElementById('result').textContent='当前浏览器中本系统的人员、课表、规则和排班数据已清除。请关闭原有系统标签页，再返回首页。'; }
+catch (error) { document.getElementById('result').textContent='清除失败：'+error.message; }
+</script></body></html>
